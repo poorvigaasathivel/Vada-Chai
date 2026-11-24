@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+:root {
+  --theme-bg: #faf5ec;
+  --theme-surface: #fffdf8;
+  --theme-surface-alt: #f3e9d8;
+  --theme-accent: #c96d3b;
+  --theme-accent-hover: #af592b;
+  --theme-accent-soft: #f5e2d4;
+  --theme-accent-text: #ffffff;
+  --theme-border: #e5d8c3;
+  --theme-text: #1f1d1a;
+  --theme-muted: #5d574f;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--theme-bg);
+    color: var(--theme-text);
+    font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    transition: background-color 450ms ease, color 300ms ease;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: "Fraunces", Georgia, serif;
+  }
+
+  .font-num {
+    font-family: "JetBrains Mono", monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.pastel-card {
+  background-color: var(--theme-surface);
+  border: 1px solid var(--theme-border);
+  box-shadow: 0 2px 10px rgba(31, 29, 26, 0.03);
+  transition: background-color 450ms ease, border-color 450ms ease, transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pastel-surface-alt {
+  background-color: var(--theme-surface-alt);
+  transition: background-color 450ms ease;
+}
+
+.pastel-btn-primary {
+  background-color: var(--theme-accent);
+  color: var(--theme-accent-text);
+  transition: background-color 180ms ease, transform 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pastel-btn-primary:hover:not(:disabled) {
+  background-color: var(--theme-accent-hover);
+}
+
+.pastel-btn-primary:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.pastel-btn-soft {
+  background-color: var(--theme-accent-soft);
+  color: var(--theme-text);
+  border: 1px solid var(--theme-border);
+  transition: background-color 180ms ease, border-color 180ms ease, transform 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pastel-btn-soft:hover:not(:disabled) {
+  filter: brightness(0.97);
+}

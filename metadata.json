@@ -1,0 +1,10 @@
+{
+  "name": "Vada & Chai",
+  "description": "An Indian-inspired personal money management companion with daily hand-drawn editorial illustrations, dynamic pastel themes, multilingual voice expense tracking, and visual money history snapshots.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
