@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 function getClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -8,11 +8,65 @@ function getClient(): GoogleGenAI | null {
   return new GoogleGenAI({
     apiKey,
     httpOptions: {
+      timeout: 12000,
       headers: {
         'User-Agent': 'aistudio-build',
       },
     },
   });
+}
+
+function isTransientError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes('503') ||
+    msg.includes('UNAVAILABLE') ||
+    msg.includes('high demand') ||
+    msg.includes('429') ||
+    msg.includes('RESOURCE_EXHAUSTED') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('ETIMEDOUT')
+  );
+}
+
+function formatGeminiError(err: unknown, fallback: string): Error {
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+  try {
+    const parsed = JSON.parse(raw) as { error?: { code?: number; message?: string } };
+    if (parsed?.error?.code === 503) {
+      return new Error('Voice AI is momentarily busy. Please tap Capture Now or retry in a moment.');
+    }
+    if (parsed?.error?.code === 429) {
+      return new Error('Voice AI rate limit reached briefly. Please try again in a few seconds.');
+    }
+    if (parsed?.error?.message) {
+      return new Error(parsed.error.message);
+    }
+  } catch {
+    // not JSON
+  }
+  if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.includes('high demand')) {
+    return new Error('Voice AI is momentarily busy. Please tap Capture Now or retry in a moment.');
+  }
+  return err instanceof Error ? err : new Error(fallback);
+}
+
+async function withGeminiRetry<T>(fn: () => Promise<T>, fallbackMsg: string): Promise<T> {
+  const delays = [450, 1100];
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < delays.length && isTransientError(err)) {
+        await new Promise((r) => setTimeout(r, delays[attempt]));
+        continue;
+      }
+      throw formatGeminiError(err, fallbackMsg);
+    }
+  }
+  throw formatGeminiError(lastErr, fallbackMsg);
 }
 
 export interface ParsedExpenseResult {
@@ -39,17 +93,21 @@ export async function transcribeAudioExpense(params: {
     },
   };
 
-  const transcribeResp = await ai.models.generateContent({
-    model: 'gemini-3.5-transcribe',
-    contents: {
-      parts: [
-        audioPart,
-        {
-          text: `Transcribe this spoken expense note accurately. The speaker may use English, Tamil, Hindi, Malayalam, Kannada, Telugu, or natural mixed-language Indian speech (such as Tanglish, Hinglish, Manglish, Kanglish, or Tenglish). Preserve numbers and item words clearly. Speaker hint: ${params.preferredLanguage || 'Auto-detect'}.`,
+  const transcribeResp = await withGeminiRetry(
+    () =>
+      ai.models.generateContent({
+        model: 'gemini-3.5-transcribe',
+        contents: {
+          parts: [
+            audioPart,
+            {
+              text: `Transcribe this spoken expense note accurately. The speaker may use English, Tamil, Hindi, Malayalam, Kannada, Telugu, or natural mixed-language Indian speech (Tanglish, Hinglish, Manglish, Kanglish, Tenglish). Preserve all numbers, spoken rupee amounts (like ambathu, pachas, nooru, yaabhai, fifty), and item descriptions faithfully. Speaker hint: ${params.preferredLanguage || 'Auto-detect'}.`,
+            },
+          ],
         },
-      ],
-    },
-  });
+      }),
+    'Unable to transcribe voice recording right now.'
+  );
 
   const transcript = (transcribeResp.text ?? '').trim();
   if (!transcript) {
@@ -71,43 +129,50 @@ export async function extractExpenseFromText(params: {
     throw new Error('Gemini API key is not configured on the server.');
   }
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
-    contents: `Extract the expense amount (in Indian Rupees) and a short, clean English/natural expense description from this spoken or typed user phrase.
-Supported languages & code-mixed forms: Tamil, Hindi, Malayalam, Kannada, Telugu, English (including Tanglish, Hinglish, Manglish, Kanglish, Tenglish).
-Examples:
-- "I spent 50 rupees on burger" -> amount: 50, description: "Burger", detectedLanguage: "English"
-- "Auto ku 80 ruba kuduthen" -> amount: 80, description: "Autorickshaw fare", detectedLanguage: "Tamil (Mixed)"
-- "Chai aur samosa ke liye 45 rupay kharch kiye" -> amount: 45, description: "Chai and Samosa", detectedLanguage: "Hindi"
-- "Metro ticket fifty five rupees" -> amount: 55, description: "Metro ticket", detectedLanguage: "English"
+  const response = await withGeminiRetry(
+    () =>
+      ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: `Extract the expense amount (in Indian Rupees) and a short, clean natural expense description from this spoken or typed user phrase.
+Supported languages, native scripts, and code-mixed forms:
+- English: "I spent 50 rupees on burger", "coffee thirty five rupees" -> 35, "Coffee"
+- Tamil / Tanglish: "Auto ku ambathu ruba kuduthen" -> 50, "Autorickshaw fare"; "Vada chai 30 ruba" -> 30, "Vada and Chai"; "நூறு ரூபாய் மளிகை" -> 100, "Groceries"
+- Hindi / Hinglish: "Chai aur samosa ke liye pachas rupay kharch kiye" -> 50, "Chai and Samosa"; "मेट्रो टिकट पैंतीस रुपये" -> 35, "Metro ticket"
+- Malayalam / Manglish: "Chayakku irupathu rupa" -> 20, "Chai"; "അമ്പത് രൂപ ഓട്ടോ" -> 50, "Autorickshaw fare"
+- Kannada / Kanglish: "Kaapi ge aivathu rupayi" -> 50, "Coffee"; "ನೂರು ರೂಪಾಯಿ ಊಟ" -> 100, "Meal"
+- Telugu / Tenglish: "Tiffin ki yaabhai rupayalu" -> 50, "Tiffin"; "వంద రూపాయలు కూరగాయలు" -> 100, "Vegetables"
 
+Convert spoken number words in any of these 6 languages into numeric digits.
 Preferred language hint: ${params.preferredLanguage || 'Auto-detect'}
 Input phrase: "${params.text}"`,
-    config: {
-      systemInstruction:
-        'You are a precise multilingual Indian expense parser. Always extract a positive numeric amount in INR and a concise 1-5 word title-case description. Never invent an amount if none is spoken (return 0 if missing).',
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          amount: {
-            type: Type.NUMBER,
-            description: 'The numeric expense amount in rupees. 0 if not found.',
-          },
-          description: {
-            type: Type.STRING,
-            description: 'Concise expense description in 1 to 6 words.',
-          },
-          detectedLanguage: {
-            type: Type.STRING,
-            description:
-              'Detected language such as English, Tamil, Hindi, Malayalam, Kannada, Telugu, or Mixed.',
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          systemInstruction:
+            'You are a precise multilingual Indian expense parser supporting Tamil, Hindi, Malayalam, Kannada, Telugu, English, and mixed Indian speech. Always extract a positive numeric amount in INR (converting any spoken number words in those languages into digits) and a concise 1-6 word title-case description. Return amount 0 only if no amount or number is mentioned.',
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              amount: {
+                type: Type.NUMBER,
+                description: 'The numeric expense amount in rupees. 0 if not found.',
+              },
+              description: {
+                type: Type.STRING,
+                description: 'Concise expense description in 1 to 6 words.',
+              },
+              detectedLanguage: {
+                type: Type.STRING,
+                description:
+                  'Detected language such as English, Tamil, Hindi, Malayalam, Kannada, Telugu, or Mixed.',
+              },
+            },
+            required: ['amount', 'description', 'detectedLanguage'],
           },
         },
-        required: ['amount', 'description', 'detectedLanguage'],
-      },
-    },
-  });
+      }),
+    'Unable to interpret expense phrase right now.'
+  );
 
   const raw = (response.text ?? '{}').trim();
   const parsed = JSON.parse(raw) as {

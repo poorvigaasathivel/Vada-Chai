@@ -18,6 +18,7 @@ import { AuthView } from './components/AuthView';
 import { LiveConversationModal } from './components/LiveConversationModal';
 import { MoneyHistorySection } from './components/MoneyHistorySection';
 import { NotificationCentre } from './components/NotificationCentre';
+import { OnTheGoVoiceBar } from './components/OnTheGoVoiceBar';
 import { ProfileModal } from './components/ProfileModal';
 import { VoiceExpenseModal } from './components/VoiceExpenseModal';
 import type {
@@ -51,6 +52,7 @@ const DEFAULT_THEME: PastelTheme = {
 };
 
 export default function App() {
+  const [authChecking, setAuthChecking] = useState(true);
   const [user, setUser] = useState<UserProfile | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [snapshots, setSnapshots] = useState<MoneySnapshot[]>([]);
@@ -67,6 +69,7 @@ export default function App() {
   const [addMoneyOpen, setAddMoneyOpen] = useState(false);
   const [addExpenseOpen, setAddExpenseOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [onTheGoVoiceOn, setOnTheGoVoiceOn] = useState(false);
   const [liveChatOpen, setLiveChatOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [bannerToast, setBannerToast] = useState<{
@@ -102,6 +105,27 @@ export default function App() {
       active = false;
     };
   }, [dayOffset]);
+
+  // Restore active session from HttpOnly cookie on load
+  useEffect(() => {
+    let active = true;
+    api
+      .me()
+      .then((res) => {
+        if (!active) return;
+        setAuthToken(res.token);
+        setUser(res.user);
+      })
+      .catch(() => {
+        // Not signed in yet
+      })
+      .finally(() => {
+        if (active) setAuthChecking(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const refreshDashboard = useCallback(async () => {
     const data = await api.getDashboard();
@@ -151,7 +175,13 @@ export default function App() {
     }
   }
 
-  function handleSignOut() {
+  async function handleSignOut() {
+    setOnTheGoVoiceOn(false);
+    try {
+      await api.logout();
+    } catch {
+      // ignore network error during logout
+    }
     setAuthToken(null);
     setUser(null);
     setTransactions([]);
@@ -160,6 +190,22 @@ export default function App() {
     setProfileOpen(false);
     setActiveSection('dashboard');
     setBannerToast(null);
+  }
+
+  if (authChecking) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6">
+        <div className="pastel-card rounded-3xl px-8 py-6 flex flex-col items-center gap-3">
+          <img
+            src="/assets/aistudio/image_e66c6e1b.png"
+            alt="Vada & Chai"
+            referrerPolicy="no-referrer"
+            className="h-14 w-auto rounded-xl object-contain"
+          />
+          <p className="text-sm text-[var(--theme-muted)]">Restoring your wallet...</p>
+        </div>
+      </div>
+    );
   }
 
   if (!user) {
@@ -200,19 +246,19 @@ export default function App() {
         style={{ backgroundColor: 'color-mix(in srgb, var(--theme-bg) 88%, transparent)' }}
       >
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
-          {/* Zone 1: Single-line Brand Wordmark */}
+          {/* Zone 1: Illustrated Vada & Chai Brand Emblem */}
           <button
             type="button"
             onClick={() => setActiveSection('dashboard')}
-            className="flex items-center gap-2.5 font-display text-xl font-semibold tracking-tight whitespace-nowrap shrink-0 cursor-pointer"
+            aria-label="Vada & Chai Dashboard"
+            className="flex items-center shrink-0 cursor-pointer"
           >
             <img
-              src="/src/assets/images/vada_chai_logo.png"
-              alt="Vada and Chai comic logo"
+              src="/assets/aistudio/image_e66c6e1b.png"
+              alt="Vada & Chai"
               referrerPolicy="no-referrer"
-              className="w-8 h-8 rounded-lg object-cover border border-[var(--theme-border)] shrink-0"
+              className="h-11 sm:h-12 w-auto rounded-xl object-contain border border-[var(--theme-border)] bg-[#FDF1D6] px-1.5 py-0.5 shrink-0"
             />
-            <span>Vada &amp; Chai</span>
           </button>
 
           {/* Zone 2: Clean Single-Line Nav Links */}
@@ -287,6 +333,28 @@ export default function App() {
               <X className="w-4 h-4" />
             </button>
           </div>
+        )}
+
+        {/* On-the-Go Voice Expense Panel (stays active across tabs when turned ON) */}
+        {user.hasInitializedBalance && (
+          <OnTheGoVoiceBar
+            active={onTheGoVoiceOn}
+            onToggleOff={() => setOnTheGoVoiceOn(false)}
+            defaultLanguage={user.preferredLanguage}
+            availableBalance={user.balance}
+            onExpenseSaved={async (result) => {
+              await refreshDashboard();
+              if (result.triggeredLowBalance && result.lowBalanceMessage) {
+                showToast('warning', 'Low Balance Alert (10% Reached)', result.lowBalanceMessage);
+              } else {
+                showToast(
+                  'info',
+                  'Voice Expense Recorded',
+                  `Deducted ${formatINR(result.amount)} for ${result.description}. Balance: ${formatINR(result.user.balance)}.`
+                );
+              }
+            }}
+          />
         )}
 
         {/* DASHBOARD VIEW */}
@@ -385,42 +453,68 @@ export default function App() {
 
                 {/* Primary Action Buttons */}
                 {user.hasInitializedBalance && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setAddMoneyOpen(true)}
-                      className="py-3 px-4 rounded-2xl pastel-btn-soft text-sm font-semibold flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
-                    >
-                      <Plus className="w-4 h-4 text-[var(--theme-accent)]" />
-                      <span>Add Money</span>
-                    </button>
+                  <div className="space-y-3 pt-2">
+                    {/* Prominent On-the-Go Voice Expense Toggle */}
+                    <div className="pastel-surface-alt rounded-2xl px-4 py-3 border border-[var(--theme-border)] flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold">Voice Expense on the Go</p>
+                        <p className="text-xs text-[var(--theme-muted)] truncate">
+                          Turn on to log expenses hands-free in Tamil, Hindi, Malayalam, Kannada, Telugu &amp; English
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={onTheGoVoiceOn}
+                        aria-label="Toggle Voice Expense on the Go"
+                        onClick={() => setOnTheGoVoiceOn((v) => !v)}
+                        className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          onTheGoVoiceOn
+                            ? 'pastel-btn-primary'
+                            : 'bg-[var(--theme-surface)] border border-[var(--theme-border)] text-[var(--theme-text)] hover:bg-black/5'
+                        }`}
+                      >
+                        {onTheGoVoiceOn ? 'Voice: ON' : 'Turn ON Voice'}
+                      </button>
+                    </div>
 
-                    <button
-                      type="button"
-                      onClick={() => setAddExpenseOpen(true)}
-                      className="py-3 px-4 rounded-2xl pastel-btn-soft text-sm font-semibold flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
-                    >
-                      <Receipt className="w-4 h-4 text-[var(--theme-accent)]" />
-                      <span>Add Expense</span>
-                    </button>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setAddMoneyOpen(true)}
+                        className="py-3 px-4 rounded-2xl pastel-btn-soft text-sm font-semibold flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4 text-[var(--theme-accent)]" />
+                        <span>Add Money</span>
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setVoiceOpen(true)}
-                      className="py-3 px-4 rounded-2xl pastel-btn-primary text-sm font-semibold flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
-                    >
-                      <Mic className="w-4 h-4" />
-                      <span>Voice Expense</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => setAddExpenseOpen(true)}
+                        className="py-3 px-4 rounded-2xl pastel-btn-soft text-sm font-semibold flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
+                      >
+                        <Receipt className="w-4 h-4 text-[var(--theme-accent)]" />
+                        <span>Add Expense</span>
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setLiveChatOpen(true)}
-                      className="py-3 px-4 rounded-2xl pastel-btn-soft text-sm font-semibold flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
-                    >
-                      <Radio className="w-4 h-4 text-[var(--theme-accent)]" />
-                      <span>Live Voice Chat</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => setVoiceOpen(true)}
+                        className="py-3 px-4 rounded-2xl pastel-btn-primary text-sm font-semibold flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
+                      >
+                        <Mic className="w-4 h-4" />
+                        <span>Quick Voice Clip</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setLiveChatOpen(true)}
+                        className="py-3 px-4 rounded-2xl pastel-btn-soft text-sm font-semibold flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
+                      >
+                        <Radio className="w-4 h-4 text-[var(--theme-accent)]" />
+                        <span>Live Voice Chat</span>
+                      </button>
+                    </div>
                   </div>
                 )}
               </section>

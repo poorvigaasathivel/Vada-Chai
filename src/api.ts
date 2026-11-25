@@ -23,11 +23,16 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
   if (!headers.has('Content-Type') && options.body) {
     headers.set('Content-Type', 'application/json');
   }
+  headers.set('X-Requested-With', 'XMLHttpRequest');
   if (inMemoryToken) {
     headers.set('Authorization', `Bearer ${inMemoryToken}`);
   }
 
-  const res = await fetch(path, { ...options, headers });
+  const res = await fetch(path, {
+    ...options,
+    headers,
+    credentials: 'same-origin',
+  });
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) {
     throw new Error(data.error || `Request failed (${res.status})`);
@@ -54,6 +59,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+  },
+
+  logout() {
+    return apiFetch<{ ok: boolean }>('/api/auth/logout', {
+      method: 'POST',
+    });
+  },
+
+  me() {
+    return apiFetch<{ token: string; user: UserProfile }>('/api/auth/me');
   },
 
   updateProfile(payload: {

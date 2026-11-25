@@ -5,9 +5,11 @@ import path from 'node:path';
 import { createServer as createViteServer } from 'vite';
 import { attachLiveVoiceServer } from './server/live.ts';
 import {
+  clearSessionCookie,
   createSessionToken,
   hashPassword,
   requireAuth,
+  setSessionCookie,
   verifyPassword,
   type AuthenticatedRequest,
 } from './server/auth.ts';
@@ -118,6 +120,7 @@ async function startServer() {
 
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow;
     const token = createSessionToken(user.id);
+    setSessionCookie(req, res, token);
     res.status(201).json({ token, user: sanitizeUser(user) });
   });
 
@@ -140,12 +143,20 @@ async function startServer() {
     }
 
     const token = createSessionToken(user.id);
+    setSessionCookie(req, res, token);
     res.json({ token, user: sanitizeUser(user) });
   });
 
-  // Auth: Current user
+  // Auth: Logout
+  app.post('/api/auth/logout', (req, res) => {
+    clearSessionCookie(req, res);
+    res.json({ ok: true });
+  });
+
+  // Auth: Current user (restores session on page reload)
   app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
-    res.json({ user: sanitizeUser(req.currentUser!) });
+    const freshToken = req.sessionToken || createSessionToken(req.userId!);
+    res.json({ token: freshToken, user: sanitizeUser(req.currentUser!) });
   });
 
   // Auth: Update profile details

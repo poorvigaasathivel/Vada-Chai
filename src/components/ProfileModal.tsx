@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { LogOut, Save, X } from 'lucide-react';
 import { api } from '../api';
 import {
@@ -29,6 +29,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [city, setCity] = useState(user.city);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setName(user.name);
+    setPreferredLanguage(user.preferredLanguage);
+    setCity(user.city);
+    setError(null);
+  }, [user, open]);
 
   if (!open) return null;
 

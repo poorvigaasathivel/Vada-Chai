@@ -76,17 +76,12 @@ export const AuthView: React.FC<AuthViewProps> = ({
         <section className="lg:col-span-7 pastel-card rounded-3xl p-6 sm:p-8 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between gap-4 mb-6">
-              <div className="flex items-center gap-3 whitespace-nowrap">
-                <img
-                  src="/src/assets/images/vada_chai_logo.png"
-                  alt="Vada and Chai comic logo"
-                  referrerPolicy="no-referrer"
-                  className="w-10 h-10 rounded-xl object-cover border border-[var(--theme-border)] shrink-0"
-                />
-                <span className="font-display text-2xl font-semibold tracking-tight">
-                  Vada &amp; Chai
-                </span>
-              </div>
+              <img
+                src="/assets/aistudio/image_e66c6e1b.png"
+                alt="Vada & Chai"
+                referrerPolicy="no-referrer"
+                className="h-14 sm:h-16 w-auto rounded-2xl object-contain border border-[var(--theme-border)] bg-[#FDF1D6] px-2 py-0.5 shrink-0"
+              />
               <span className="text-xs font-medium text-[var(--theme-muted)]">
                 Daily Edition · {illustration?.dateKey ?? 'Today'}
               </span>
@@ -211,6 +206,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                     id="auth-name"
                     type="text"
                     required
+                    autoComplete="name"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="e.g. Ananya Iyer"
@@ -230,6 +226,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   id="auth-email"
                   type="email"
                   required
+                  autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="you@example.com"
@@ -249,6 +246,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   type={showPassword ? 'text' : 'password'}
                   required
                   minLength={6}
+                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="At least 6 characters"
@@ -306,9 +304,21 @@ export const AuthView: React.FC<AuthViewProps> = ({
             {error && (
               <div
                 role="alert"
-                className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm"
+                className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm space-y-2"
               >
-                {error}
+                <p>{error}</p>
+                {mode === 'register' && error.toLowerCase().includes('already exists') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('login');
+                      setError(null);
+                    }}
+                    className="text-xs font-semibold underline cursor-pointer"
+                  >
+                    Switch to Sign In with {email}
+                  </button>
+                )}
               </div>
             )}
 
