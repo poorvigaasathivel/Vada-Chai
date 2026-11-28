@@ -2,13 +2,14 @@ import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { db, type UserRow } from './db.ts';
 
-const SESSION_SECRET =
-  process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16
-    ? process.env.SESSION_SECRET
-    : crypto.randomBytes(32).toString('hex');
-
-const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
+const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+const DEVICE_TTL_MS = 1000 * 60 * 60 * 24 * 180; // 180 days
 export const SESSION_COOKIE_NAME = 'vc_session';
+export const DEVICE_COOKIE_NAME = 'vc_device';
+
+function sha256Hex(value: string): string {
+  return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
+}
 
 export function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -27,54 +28,47 @@ export function verifyPassword(password: string, storedHash: string): boolean {
   return crypto.timingSafeEqual(derived, expected);
 }
 
-interface TokenPayload {
-  uid: number;
-  exp: number;
-}
-
 export function createSessionToken(userId: number): string {
-  const payload: TokenPayload = {
-    uid: userId,
-    exp: Date.now() + TOKEN_TTL_MS,
-  };
-  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const signature = crypto
-    .createHmac('sha256', SESSION_SECRET)
-    .update(encodedPayload)
-    .digest('base64url');
-  return `${encodedPayload}.${signature}`;
+  const token = crypto.randomBytes(32).toString('hex');
+  const tokenHash = sha256Hex(token);
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + TOKEN_TTL_MS).toISOString();
+
+  db.prepare(
+    'INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)'
+  ).run(tokenHash, userId, expiresAt, now.toISOString());
+
+  // Prune expired sessions occasionally without blocking callers
+  db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now.toISOString());
+
+  return token;
 }
 
 export function verifySessionToken(token: string): number | null {
-  const parts = token.split('.');
-  if (parts.length !== 2) return null;
-  const [encodedPayload, sig] = parts;
-  if (!encodedPayload || !sig) return null;
+  if (!token || token.length < 32 || token.length > 256) return null;
+  const tokenHash = sha256Hex(token);
+  const row = db
+    .prepare('SELECT user_id, expires_at FROM sessions WHERE token_hash = ?')
+    .get(tokenHash) as { user_id: number; expires_at: string } | undefined;
 
-  const expectedSig = crypto
-    .createHmac('sha256', SESSION_SECRET)
-    .update(encodedPayload)
-    .digest('base64url');
-
-  const sigBuf = Buffer.from(sig, 'utf8');
-  const expectedBuf = Buffer.from(expectedSig, 'utf8');
-  if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+  if (!row) return null;
+  if (new Date(row.expires_at).getTime() <= Date.now()) {
+    db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
     return null;
   }
+  return row.user_id;
+}
 
-  try {
-    const parsed = JSON.parse(
-      Buffer.from(encodedPayload, 'base64url').toString('utf8')
-    ) as TokenPayload;
-    if (typeof parsed.uid !== 'number' || typeof parsed.exp !== 'number') {
-      return null;
-    }
-    if (Date.now() > parsed.exp) {
-      return null;
-    }
-    return parsed.uid;
-  } catch {
-    return null;
+export function revokeSessionToken(req: Request): void {
+  const authHeader = req.headers.authorization;
+  let token: string | null = null;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice('Bearer '.length).trim();
+  } else {
+    token = parseCookieValue(req.headers.cookie, SESSION_COOKIE_NAME);
+  }
+  if (token) {
+    db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256Hex(token));
   }
 }
 
@@ -97,39 +91,124 @@ function isHttpsRequest(req: Request): boolean {
   if (typeof proto === 'string' && proto.split(',')[0].trim() === 'https') {
     return true;
   }
+  const origin = req.headers.origin;
+  if (typeof origin === 'string' && origin.startsWith('https://')) {
+    return true;
+  }
+  const referer = req.headers.referer;
+  if (typeof referer === 'string' && referer.startsWith('https://')) {
+    return true;
+  }
   return req.secure;
+}
+
+function formatHttpOnlyCookie(
+  req: Request,
+  name: string,
+  value: string,
+  maxAgeSeconds: number
+): string {
+  const encoded = encodeURIComponent(value);
+  if (isHttpsRequest(req)) {
+    return `${name}=${encoded}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=None; Partitioned`;
+  }
+  return `${name}=${encoded}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Strict`;
 }
 
 export function setSessionCookie(req: Request, res: Response, token: string): void {
   const maxAgeSeconds = Math.floor(TOKEN_TTL_MS / 1000);
-  if (isHttpsRequest(req)) {
-    res.setHeader(
-      'Set-Cookie',
-      `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=None; Partitioned`
-    );
-  } else {
-    res.setHeader(
-      'Set-Cookie',
-      `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Strict`
-    );
-  }
+  res.append('Set-Cookie', formatHttpOnlyCookie(req, SESSION_COOKIE_NAME, token, maxAgeSeconds));
 }
 
 export function clearSessionCookie(req: Request, res: Response): void {
-  if (isHttpsRequest(req)) {
-    res.setHeader(
-      'Set-Cookie',
-      `${SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=None; Partitioned`
-    );
-  } else {
-    res.setHeader(
-      'Set-Cookie',
-      `${SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`
-    );
-  }
+  res.append('Set-Cookie', formatHttpOnlyCookie(req, SESSION_COOKIE_NAME, '', 0));
 }
 
-function hasValidCsrfCheck(req: Request): boolean {
+export function rememberUserOnDevice(req: Request, res: Response, userId: number): void {
+  let deviceId = parseCookieValue(req.headers.cookie, DEVICE_COOKIE_NAME);
+  if (!deviceId || deviceId.length < 32) {
+    deviceId = crypto.randomBytes(32).toString('hex');
+  }
+  const deviceIdHash = sha256Hex(deviceId);
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO device_accounts (device_id_hash, user_id, last_used_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(device_id_hash, user_id) DO UPDATE SET last_used_at = excluded.last_used_at
+  `).run(deviceIdHash, userId, now);
+
+  const maxAgeSeconds = Math.floor(DEVICE_TTL_MS / 1000);
+  res.append('Set-Cookie', formatHttpOnlyCookie(req, DEVICE_COOKIE_NAME, deviceId, maxAgeSeconds));
+}
+
+export interface RememberedAccountSummary {
+  email: string;
+  name: string;
+  city: string;
+}
+
+export function getDeviceRememberedAccounts(req: Request): RememberedAccountSummary[] {
+  const deviceId = parseCookieValue(req.headers.cookie, DEVICE_COOKIE_NAME);
+  if (!deviceId || deviceId.length < 32) return [];
+  const deviceIdHash = sha256Hex(deviceId);
+
+  const rows = db
+    .prepare(`
+      SELECT u.email, u.name, u.city
+      FROM device_accounts d
+      JOIN users u ON u.id = d.user_id
+      WHERE d.device_id_hash = ?
+      ORDER BY d.last_used_at DESC
+      LIMIT 8
+    `)
+    .all(deviceIdHash) as unknown as RememberedAccountSummary[];
+
+  return rows;
+}
+
+export function verifyDeviceAccountAccess(req: Request, email: string): UserRow | null {
+  const deviceId = parseCookieValue(req.headers.cookie, DEVICE_COOKIE_NAME);
+  if (!deviceId || deviceId.length < 32) return null;
+  const deviceIdHash = sha256Hex(deviceId);
+  const cleanEmail = email.trim().toLowerCase();
+
+  const row = db
+    .prepare(`
+      SELECT u.*
+      FROM device_accounts d
+      JOIN users u ON u.id = d.user_id
+      WHERE d.device_id_hash = ? AND u.email = ?
+    `)
+    .get(deviceIdHash, cleanEmail) as unknown as UserRow | undefined;
+
+  if (!row) return null;
+
+  db.prepare(
+    'UPDATE device_accounts SET last_used_at = ? WHERE device_id_hash = ? AND user_id = ?'
+  ).run(new Date().toISOString(), deviceIdHash, row.id);
+
+  return row;
+}
+
+export function forgetDeviceAccount(req: Request, email: string): void {
+  const deviceId = parseCookieValue(req.headers.cookie, DEVICE_COOKIE_NAME);
+  if (!deviceId || deviceId.length < 32) return;
+  const deviceIdHash = sha256Hex(deviceId);
+  const cleanEmail = email.trim().toLowerCase();
+
+  const user = db
+    .prepare('SELECT id FROM users WHERE email = ?')
+    .get(cleanEmail) as { id: number } | undefined;
+  if (!user) return;
+
+  db.prepare('DELETE FROM device_accounts WHERE device_id_hash = ? AND user_id = ?').run(
+    deviceIdHash,
+    user.id
+  );
+}
+
+export function hasValidCsrfCheck(req: Request): boolean {
   if (req.headers['x-requested-with'] === 'XMLHttpRequest') {
     return true;
   }

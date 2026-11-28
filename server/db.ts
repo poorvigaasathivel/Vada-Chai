@@ -78,6 +78,23 @@ db.exec(`
     money_tip TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS device_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id_hash TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    last_used_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(device_id_hash, user_id)
+  );
 `);
 
 export interface UserRow {

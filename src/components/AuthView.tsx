@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ArrowRight, Eye, EyeOff, Lock, Mail, MapPin, User } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ArrowRight, Eye, EyeOff, Lock, Mail, MapPin, User, X } from 'lucide-react';
 import { api, setAuthToken } from '../api';
 import {
   SUPPORTED_LANGUAGES,
@@ -8,6 +8,12 @@ import {
   type SupportedLanguage,
   type UserProfile,
 } from '../types';
+
+interface SavedAccount {
+  email: string;
+  name: string;
+  city: string;
+}
 
 interface AuthViewProps {
   illustration: DailyIllustration | null;
@@ -30,6 +36,58 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
+  const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    api
+      .getRememberedAccounts()
+      .then((res) => {
+        if (!active) return;
+        setSavedAccounts(res.accounts);
+        if (res.accounts.length > 0) {
+          setEmail((prev) => prev || res.accounts[0].email);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const matchedSaved =
+    mode === 'login'
+      ? savedAccounts.find((a) => a.email.trim().toLowerCase() === email.trim().toLowerCase())
+      : undefined;
+
+  async function handleQuickSignIn(targetEmail: string) {
+    if (submitting) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      const res = await api.quickLogin({ email: targetEmail });
+      setAuthToken(res.token);
+      onAuthenticated(res.user, res.token);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to sign in automatically.');
+      setEmail(targetEmail);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleForgetAccount(targetEmail: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    try {
+      const res = await api.forgetRememberedAccount({ email: targetEmail });
+      setSavedAccounts(res.accounts);
+      if (email.trim().toLowerCase() === targetEmail.trim().toLowerCase()) {
+        setEmail('');
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -39,9 +97,15 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
     try {
       if (mode === 'login') {
-        const res = await api.login({ email, password });
-        setAuthToken(res.token);
-        onAuthenticated(res.user, res.token);
+        if (matchedSaved && !password) {
+          const res = await api.quickLogin({ email });
+          setAuthToken(res.token);
+          onAuthenticated(res.user, res.token);
+        } else {
+          const res = await api.login({ email, password });
+          setAuthToken(res.token);
+          onAuthenticated(res.user, res.token);
+        }
       } else {
         const res = await api.register({
           name,
@@ -194,6 +258,51 @@ export const AuthView: React.FC<AuthViewProps> = ({
             </p>
           </div>
 
+          {mode === 'login' && savedAccounts.length > 0 && (
+            <div className="mb-5 space-y-2">
+              <p className="text-xs font-medium text-[var(--theme-muted)]">
+                Saved accounts on this browser (1-tap sign in)
+              </p>
+              <div className="space-y-2">
+                {savedAccounts.map((acc) => (
+                  <div
+                    key={acc.email}
+                    className="flex items-center justify-between gap-2 p-2.5 rounded-xl pastel-surface-alt border border-[var(--theme-border)]"
+                  >
+                    <button
+                      type="button"
+                      disabled={submitting}
+                      onClick={() => handleQuickSignIn(acc.email)}
+                      className="flex-1 text-left min-w-0 cursor-pointer hover:opacity-80"
+                    >
+                      <p className="text-sm font-semibold truncate">{acc.name}</p>
+                      <p className="text-xs text-[var(--theme-muted)] truncate">
+                        {acc.email}
+                        {acc.city ? ` · ${acc.city}` : ''}
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={submitting}
+                      onClick={() => handleQuickSignIn(acc.email)}
+                      className="px-3 py-1.5 rounded-lg pastel-btn-primary text-xs font-medium shrink-0 cursor-pointer"
+                    >
+                      Open
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => handleForgetAccount(acc.email, e)}
+                      aria-label={`Remove saved account ${acc.email}`}
+                      className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--theme-muted)] shrink-0 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-4">
             {mode === 'register' && (
               <div>
@@ -233,35 +342,42 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-surface)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--theme-accent)]"
                 />
               </div>
+              {matchedSaved && (
+                <p className="text-xs text-[var(--theme-accent)] font-medium mt-1.5">
+                  Recognized as {matchedSaved.name} on this browser — tap below to open your wallet immediately.
+                </p>
+              )}
             </div>
 
-            <div>
-              <label htmlFor="auth-password" className="block text-sm font-medium mb-1.5">
-                Password
-              </label>
-              <div className="relative">
-                <Lock className="w-4 h-4 text-[var(--theme-muted)] absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  id="auth-password"
-                  type={showPassword ? 'text' : 'password'}
-                  required
-                  minLength={6}
-                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="At least 6 characters"
-                  className="w-full pl-10 pr-11 py-2.5 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-surface)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--theme-accent)]"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((prev) => !prev)}
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-[var(--theme-muted)] hover:text-[var(--theme-text)]"
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
+            {(!matchedSaved || mode === 'register') && (
+              <div>
+                <label htmlFor="auth-password" className="block text-sm font-medium mb-1.5">
+                  Password
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-[var(--theme-muted)] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    id="auth-password"
+                    type={showPassword ? 'text' : 'password'}
+                    required={!matchedSaved}
+                    minLength={6}
+                    autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="At least 6 characters"
+                    className="w-full pl-10 pr-11 py-2.5 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-surface)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--theme-accent)]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-[var(--theme-muted)] hover:text-[var(--theme-text)]"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
             {mode === 'register' && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -331,7 +447,9 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 {submitting
                   ? 'Please wait...'
                   : mode === 'login'
-                    ? 'Sign In to Vada & Chai'
+                    ? matchedSaved
+                      ? `Open ${matchedSaved.name.split(' ')[0]}'s Wallet`
+                      : 'Sign In to Vada & Chai'
                     : 'Create Personal Account'}
               </span>
               <ArrowRight className="w-4 h-4" />

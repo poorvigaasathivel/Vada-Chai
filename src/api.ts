@@ -67,6 +67,28 @@ export const api = {
     });
   },
 
+  getRememberedAccounts() {
+    return apiFetch<{
+      accounts: Array<{ email: string; name: string; city: string }>;
+    }>('/api/auth/remembered');
+  },
+
+  quickLogin(payload: { email: string }) {
+    return apiFetch<{ token: string; user: UserProfile }>('/api/auth/quick-login', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  forgetRememberedAccount(payload: { email: string }) {
+    return apiFetch<{
+      accounts: Array<{ email: string; name: string; city: string }>;
+    }>('/api/auth/forget-device', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
   me() {
     return apiFetch<{ token: string; user: UserProfile }>('/api/auth/me');
   },

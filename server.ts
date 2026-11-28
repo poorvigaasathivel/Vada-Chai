@@ -7,9 +7,15 @@ import { attachLiveVoiceServer } from './server/live.ts';
 import {
   clearSessionCookie,
   createSessionToken,
+  forgetDeviceAccount,
+  getDeviceRememberedAccounts,
   hashPassword,
+  hasValidCsrfCheck,
+  rememberUserOnDevice,
   requireAuth,
+  revokeSessionToken,
   setSessionCookie,
+  verifyDeviceAccountAccess,
   verifyPassword,
   type AuthenticatedRequest,
 } from './server/auth.ts';
@@ -61,6 +67,7 @@ function pickLowBalanceMessage(balance: number, userId: number): string {
 
 async function startServer() {
   const app = express();
+  app.set('trust proxy', 1);
   app.use(express.json({ limit: '15mb' }));
 
   // Health endpoint
@@ -121,6 +128,7 @@ async function startServer() {
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow;
     const token = createSessionToken(user.id);
     setSessionCookie(req, res, token);
+    rememberUserOnDevice(req, res, user.id);
     res.status(201).json({ token, user: sanitizeUser(user) });
   });
 
@@ -144,18 +152,69 @@ async function startServer() {
 
     const token = createSessionToken(user.id);
     setSessionCookie(req, res, token);
+    rememberUserOnDevice(req, res, user.id);
     res.json({ token, user: sanitizeUser(user) });
+  });
+
+  // Auth: Remembered accounts on this browser
+  app.get('/api/auth/remembered', (req, res) => {
+    res.json({ accounts: getDeviceRememberedAccounts(req) });
+  });
+
+  // Auth: Immediate email login on a remembered browser
+  app.post('/api/auth/quick-login', (req, res) => {
+    if (!hasValidCsrfCheck(req)) {
+      res.status(403).json({ error: 'Cross-site request blocked.' });
+      return;
+    }
+    const { email } = req.body ?? {};
+    if (typeof email !== 'string' || !email.trim()) {
+      res.status(400).json({ error: 'Email is required.' });
+      return;
+    }
+
+    const user = verifyDeviceAccountAccess(req, email);
+    if (!user) {
+      res.status(401).json({
+        error: 'Please enter your password to sign in with this email on this browser.',
+      });
+      return;
+    }
+
+    const token = createSessionToken(user.id);
+    setSessionCookie(req, res, token);
+    rememberUserOnDevice(req, res, user.id);
+    res.json({ token, user: sanitizeUser(user) });
+  });
+
+  // Auth: Forget a remembered account from this browser
+  app.post('/api/auth/forget-device', (req, res) => {
+    if (!hasValidCsrfCheck(req)) {
+      res.status(403).json({ error: 'Cross-site request blocked.' });
+      return;
+    }
+    const { email } = req.body ?? {};
+    if (typeof email === 'string' && email.trim()) {
+      forgetDeviceAccount(req, email);
+    }
+    res.json({ accounts: getDeviceRememberedAccounts(req) });
   });
 
   // Auth: Logout
   app.post('/api/auth/logout', (req, res) => {
+    if (req.headers.cookie && !hasValidCsrfCheck(req)) {
+      res.status(403).json({ error: 'Cross-site request blocked.' });
+      return;
+    }
+    revokeSessionToken(req);
     clearSessionCookie(req, res);
     res.json({ ok: true });
   });
 
-  // Auth: Current user (restores session on page reload)
+  // Auth: Current user (restores session on page reload / app reopen)
   app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
     const freshToken = req.sessionToken || createSessionToken(req.userId!);
+    rememberUserOnDevice(req, res, req.userId!);
     res.json({ token: freshToken, user: sanitizeUser(req.currentUser!) });
   });
 
